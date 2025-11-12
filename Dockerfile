@@ -1,0 +1,64 @@
+
+FROM runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04
+
+# Set working directory
+WORKDIR /workspace
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    git \
+    wget \
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python packages
+RUN pip install --no-cache-dir \
+    torch torchvision torchaudio \
+    xformers==0.0.22 \
+    einops \
+    opencv-python \
+    pillow \
+    requests \
+    tqdm \
+    gdown \
+    mediapipe \
+    controlnet-aux \
+    "numpy<2.0" \
+    "scipy<1.13" \
+    runpod
+
+# Clone ComfyUI
+RUN git clone https://github.com/comfyanonymous/ComfyUI /workspace/ComfyUI
+
+# Install ComfyUI requirements
+WORKDIR /workspace/ComfyUI
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Install custom nodes
+RUN cd custom_nodes && \
+    git clone https://github.com/ltdrdata/ComfyUI-Manager.git && \
+    git clone https://github.com/Fannovel16/comfyui_controlnet_aux.git && \
+    cd comfyui_controlnet_aux && \
+    pip install --no-cache-dir -r requirements.txt
+
+# Copy handler script
+COPY handler.py /workspace/handler.py
+COPY download_models.py /workspace/download_models.py
+
+# Create model directories
+RUN mkdir -p \
+    /workspace/ComfyUI/models/checkpoints \
+    /workspace/ComfyUI/models/loras \
+    /workspace/ComfyUI/models/controlnet \
+    /workspace/ComfyUI/models/vae \
+    /workspace/ComfyUI/user/default/workflows
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1
+ENV COMFY_DIR=/workspace/ComfyUI
+
+WORKDIR /workspace
+
+# Start handler
+CMD ["python", "-u", "handler.py"]
