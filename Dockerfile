@@ -13,9 +13,12 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python packages
+# Note: PyTorch 2.1.0 is already installed in the base image
+# We're upgrading to PyTorch 2.4.0 for better stability and float8 support
 RUN pip install --no-cache-dir \
-    torch torchvision torchaudio \
-    xformers==0.0.22 \
+    torch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 --index-url https://download.pytorch.org/whl/cu118 && \
+    pip install --no-cache-dir \
+    xformers==0.0.27.post2 \
     einops \
     opencv-python \
     pillow \

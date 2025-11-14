@@ -46,3 +46,6 @@ models/
 /tmp/
 *.tmp
 *.log
+
+
+.env
