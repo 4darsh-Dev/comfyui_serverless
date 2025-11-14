@@ -9,35 +9,61 @@ from tqdm import tqdm
 COMFY_DIR = Path("/workspace/ComfyUI")
 
 def download_file(url, destination, description="Downloading"):
-    """Download file with progress bar"""
+    """Download file with progress bar and retry logic"""
     destination = Path(destination)
     
     if destination.exists():
-        print(f"✓ {destination.name} already exists")
+        size_mb = destination.stat().st_size / (1024 * 1024)
+        print(f"✓ {destination.name} already exists ({size_mb:.1f} MB)")
         return True
     
     print(f"📥 {description}...")
     destination.parent.mkdir(parents=True, exist_ok=True)
     
-    try:
-        response = requests.get(url, stream=True)
-        total_size = int(response.headers.get('content-length', 0))
-        
-        with open(destination, 'wb') as f, tqdm(
-            total=total_size,
-            unit='B',
-            unit_scale=True,
-            desc=destination.name
-        ) as pbar:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
-                pbar.update(len(chunk))
-        
-        print(f"✅ Downloaded {destination.name}")
-        return True
-    except Exception as e:
-        print(f"❌ Failed to download {destination.name}: {e}")
-        return False
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            print(f"  Attempt {attempt + 1}/{max_retries}...")
+            response = requests.get(url, stream=True, timeout=60)
+            response.raise_for_status()  # Raise exception for bad status codes
+            
+            total_size = int(response.headers.get('content-length', 0))
+            
+            with open(destination, 'wb') as f, tqdm(
+                total=total_size,
+                unit='B',
+                unit_scale=True,
+                desc=destination.name
+            ) as pbar:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:  # filter out keep-alive new chunks
+                        f.write(chunk)
+                        pbar.update(len(chunk))
+            
+            # Verify file was written
+            if destination.exists() and destination.stat().st_size > 0:
+                size_mb = destination.stat().st_size / (1024 * 1024)
+                print(f"✅ Downloaded {destination.name} ({size_mb:.1f} MB)")
+                return True
+            else:
+                print(f"⚠️ File appears to be empty or missing after download")
+                if destination.exists():
+                    destination.unlink()
+                    
+        except requests.exceptions.Timeout:
+            print(f"⚠️ Download timeout on attempt {attempt + 1}")
+        except requests.exceptions.RequestException as e:
+            print(f"⚠️ Download error on attempt {attempt + 1}: {e}")
+        except Exception as e:
+            print(f"❌ Unexpected error: {type(e).__name__}: {e}")
+            
+        if attempt < max_retries - 1:
+            print("  Retrying in 5 seconds...")
+            import time
+            time.sleep(5)
+    
+    print(f"❌ Failed to download {destination.name} after {max_retries} attempts")
+    return False
 
 def download_all_models():
     """Download all required models"""
@@ -96,16 +122,22 @@ def download_all_models():
         try:
             GDRIVE_FILE_ID = "1rH5E5DxUx4AcSoL4sUC550oEsVG6xNDY"
             url = f"https://drive.google.com/uc?id={GDRIVE_FILE_ID}"
+            print(f"  Downloading from Google Drive (ID: {GDRIVE_FILE_ID})...")
             gdown.download(url, str(lora_path), quiet=False)
             
-            if lora_path.exists():
+            if lora_path.exists() and lora_path.stat().st_size > 0:
                 file_size = lora_path.stat().st_size / (1024 * 1024)
                 print(f"✅ LoRA downloaded ({file_size:.2f} MB)")
                 success_count += 1
+            else:
+                print(f"❌ LoRA download failed or file is empty")
+                if lora_path.exists():
+                    lora_path.unlink()
         except Exception as e:
-            print(f"❌ Failed to download LoRA: {e}")
+            print(f"❌ Failed to download LoRA: {type(e).__name__}: {e}")
     else:
-        print("✓ LoRA already exists")
+        file_size = lora_path.stat().st_size / (1024 * 1024)
+        print(f"✓ LoRA already exists ({file_size:.2f} MB)")
         success_count += 1
     
     # Download workflow JSON

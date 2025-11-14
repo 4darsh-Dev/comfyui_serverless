@@ -26,34 +26,113 @@ COMFY_URL = f"http://127.0.0.1:{COMFY_PORT}"
 comfy_process = None
 
 def start_comfyui():
-    """Start ComfyUI server in background"""
+    """Start ComfyUI server in background with detailed logging"""
     global comfy_process
     
     if comfy_process is not None:
-        return True
+        print("ℹ️ ComfyUI process already running, checking health...")
+        try:
+            response = requests.get(f"{COMFY_URL}/system_stats", timeout=5)
+            if response.status_code == 200:
+                print("✅ Existing ComfyUI server is healthy")
+                return True
+            else:
+                print("⚠️ Existing server unhealthy, restarting...")
+                comfy_process.terminate()
+                comfy_process.wait(timeout=10)
+                comfy_process = None
+        except Exception as e:
+            print(f"⚠️ Error checking existing server: {e}, restarting...")
+            try:
+                comfy_process.terminate()
+                comfy_process.wait(timeout=10)
+            except:
+                pass
+            comfy_process = None
     
     print("🚀 Starting ComfyUI server...")
-    os.chdir(COMFY_DIR)
+    print(f"📂 Working directory: {COMFY_DIR}")
+    print(f"🔧 Python executable: {sys.executable}")
+    print(f"🌐 Server URL: {COMFY_URL}")
     
-    comfy_process = subprocess.Popen(
-        [sys.executable, "main.py", "--listen", "0.0.0.0", "--port", str(COMFY_PORT)],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE
-    )
+    # Check if ComfyUI directory exists
+    if not COMFY_DIR.exists():
+        print(f"❌ ComfyUI directory not found: {COMFY_DIR}")
+        return False
     
-    # Wait for server to start
-    max_retries = 30
-    for i in range(max_retries):
-        try:
-            response = requests.get(f"{COMFY_URL}/system_stats")
-            if response.status_code == 200:
-                print("✅ ComfyUI server started successfully")
-                return True
-        except:
+    # Check if main.py exists
+    main_py = COMFY_DIR / "main.py"
+    if not main_py.exists():
+        print(f"❌ ComfyUI main.py not found: {main_py}")
+        return False
+    
+    print("✅ ComfyUI files verified")
+    
+    try:
+        os.chdir(COMFY_DIR)
+        print(f"✅ Changed directory to: {os.getcwd()}")
+        
+        # Start ComfyUI process with unbuffered output
+        comfy_process = subprocess.Popen(
+            [sys.executable, "-u", "main.py", "--listen", "0.0.0.0", "--port", str(COMFY_PORT)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,  # Merge stderr to stdout
+            bufsize=1,
+            universal_newlines=True
+        )
+        
+        print(f"✅ ComfyUI process started (PID: {comfy_process.pid})")
+        
+        # Wait for server to start with detailed logging
+        max_retries = 60  # Increased to 60 seconds
+        print(f"⏳ Waiting for server to start (max {max_retries} seconds)...")
+        
+        for i in range(max_retries):
+            # Check if process is still running
+            if comfy_process.poll() is not None:
+                print(f"❌ ComfyUI process terminated unexpectedly (exit code: {comfy_process.returncode})")
+                print("📋 Process output:")
+                try:
+                    output, _ = comfy_process.communicate(timeout=1)
+                    print(output)
+                except:
+                    pass
+                return False
+            
+            try:
+                response = requests.get(f"{COMFY_URL}/system_stats", timeout=2)
+                if response.status_code == 200:
+                    print(f"✅ ComfyUI server started successfully after {i+1} seconds")
+                    return True
+            except requests.exceptions.ConnectionError:
+                # Expected while server is starting
+                pass
+            except Exception as e:
+                if i % 10 == 0:  # Log every 10 seconds
+                    print(f"⏳ Still waiting... ({i+1}/{max_retries}s) - {type(e).__name__}")
+            
             time.sleep(1)
-    
-    print("❌ Failed to start ComfyUI server")
-    return False
+        
+        print(f"❌ Failed to start ComfyUI server after {max_retries} seconds")
+        
+        # Try to get process output for debugging
+        if comfy_process and comfy_process.poll() is None:
+            print("📋 Attempting to retrieve process output...")
+            try:
+                comfy_process.terminate()
+                output, _ = comfy_process.communicate(timeout=5)
+                print("Process output:")
+                print(output[:2000])  # Print first 2000 chars
+            except Exception as e:
+                print(f"⚠️ Could not retrieve process output: {e}")
+        
+        return False
+        
+    except Exception as e:
+        print(f"❌ Exception starting ComfyUI: {type(e).__name__}: {e}")
+        import traceback
+        print(traceback.format_exc())
+        return False
 
 def convert_image_format(image_data, output_format="jpg", quality=95):
     """
@@ -122,48 +201,101 @@ def get_file_size_mb(data):
     """Get size of data in MB"""
     return len(data) / (1024 * 1024)
 
-def queue_prompt(workflow_json):
-    """Queue a prompt in ComfyUI"""
+def save_image_to_disk(image_data, filename, output_dir="/workspace/outputs"):
+    """
+    Save image to disk for persistence
+    
+    Args:
+        image_data: Raw image bytes
+        filename: Output filename
+        output_dir: Directory to save images
+        
+    Returns:
+        Path to saved file or None on error
+    """
     try:
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+        
+        file_path = output_path / filename
+        with open(file_path, 'wb') as f:
+            f.write(image_data)
+        
+        size_mb = len(image_data) / (1024 * 1024)
+        print(f"💾 Saved image: {file_path} ({size_mb:.2f} MB)")
+        return str(file_path)
+    except Exception as e:
+        print(f"❌ Error saving image: {type(e).__name__}: {e}")
+        return None
+
+def queue_prompt(workflow_json):
+    """Queue a prompt in ComfyUI with detailed error logging"""
+    try:
+        print("📤 Queueing prompt to ComfyUI...")
         response = requests.post(
             f"{COMFY_URL}/prompt",
-            json={"prompt": workflow_json}
+            json={"prompt": workflow_json},
+            timeout=30
         )
         
         if response.status_code == 200:
-            return response.json()
+            result = response.json()
+            print(f"✅ Prompt queued successfully: {result.get('prompt_id', 'unknown')}")
+            return result
         else:
-            return {"error": f"Failed to queue prompt: {response.text}"}
+            error_msg = f"Failed to queue prompt (HTTP {response.status_code}): {response.text}"
+            print(f"❌ {error_msg}")
+            return {"error": error_msg}
+    except requests.exceptions.Timeout:
+        error_msg = "Timeout queuing prompt (>30s)"
+        print(f"❌ {error_msg}")
+        return {"error": error_msg}
     except Exception as e:
-        return {"error": f"Exception queuing prompt: {str(e)}"}
+        error_msg = f"Exception queuing prompt: {type(e).__name__}: {str(e)}"
+        print(f"❌ {error_msg}")
+        import traceback
+        print(traceback.format_exc())
+        return {"error": error_msg}
 
 def get_image(filename, subfolder, folder_type):
-    """Get generated image from ComfyUI"""
+    """Get generated image from ComfyUI with error logging"""
     try:
+        print(f"📥 Fetching image: {filename} (subfolder: {subfolder}, type: {folder_type})")
         response = requests.get(
             f"{COMFY_URL}/view",
             params={
                 "filename": filename,
                 "subfolder": subfolder,
                 "type": folder_type
-            }
+            },
+            timeout=30
         )
         
         if response.status_code == 200:
+            size_mb = len(response.content) / (1024 * 1024)
+            print(f"✅ Image fetched successfully ({size_mb:.2f} MB)")
             return response.content
         else:
+            print(f"❌ Failed to fetch image (HTTP {response.status_code}): {response.text}")
             return None
     except Exception as e:
-        print(f"Error getting image: {e}")
+        print(f"❌ Error getting image: {type(e).__name__}: {e}")
         return None
 
 def wait_for_completion(prompt_id, timeout=300):
-    """Wait for prompt to complete"""
+    """Wait for prompt to complete with detailed logging"""
     start_time = time.time()
+    print(f"⏳ Waiting for prompt completion (ID: {prompt_id}, timeout: {timeout}s)...")
+    
+    last_status = None
+    check_count = 0
     
     while time.time() - start_time < timeout:
+        check_count += 1
+        elapsed = int(time.time() - start_time)
+        
         try:
-            response = requests.get(f"{COMFY_URL}/history/{prompt_id}")
+            response = requests.get(f"{COMFY_URL}/history/{prompt_id}", timeout=10)
             
             if response.status_code == 200:
                 history = response.json()
@@ -171,79 +303,147 @@ def wait_for_completion(prompt_id, timeout=300):
                 if prompt_id in history:
                     prompt_history = history[prompt_id]
                     
+                    # Check for outputs first
                     if "outputs" in prompt_history:
-                        return prompt_history["outputs"]
+                        outputs = prompt_history["outputs"]
+                        if outputs:  # Make sure outputs is not empty
+                            print(f"✅ Prompt completed after {elapsed}s")
+                            return outputs
                     
+                    # Check status
                     if "status" in prompt_history:
                         status = prompt_history["status"]
+                        status_str = status.get("status_str", "unknown")
+                        
+                        # Log status changes
+                        if status_str != last_status:
+                            print(f"📊 Status update: {status_str} (after {elapsed}s)")
+                            last_status = status_str
+                        
                         if status.get("completed", False):
-                            return prompt_history.get("outputs", {})
-                        if status.get("status_str") == "error":
-                            return {"error": status.get("messages", ["Unknown error"])}
+                            outputs = prompt_history.get("outputs", {})
+                            if outputs:
+                                print(f"✅ Prompt completed after {elapsed}s")
+                                return outputs
+                            else:
+                                print(f"⚠️ Prompt marked complete but no outputs found")
+                        
+                        if status_str == "error":
+                            error_msgs = status.get("messages", ["Unknown error"])
+                            print(f"❌ Prompt failed with error: {error_msgs}")
+                            return {"error": error_msgs}
+                else:
+                    if check_count % 5 == 1:  # Log every 5 checks (~10 seconds)
+                        print(f"⏳ Waiting for prompt to appear in history... ({elapsed}s)")
+            else:
+                print(f"⚠️ Failed to check history (HTTP {response.status_code})")
             
             time.sleep(2)
+            
+        except requests.exceptions.Timeout:
+            print(f"⚠️ Timeout checking completion status at {elapsed}s")
+            time.sleep(2)
         except Exception as e:
-            print(f"Error checking completion: {e}")
+            print(f"❌ Error checking completion: {type(e).__name__}: {e}")
             time.sleep(2)
     
-    return {"error": "Timeout waiting for completion"}
+    print(f"❌ Timeout waiting for completion after {timeout}s")
+    return {"error": f"Timeout waiting for completion after {timeout}s"}
 
 def create_workflow(job_input):
-    """Create ComfyUI workflow from job input"""
+    """
+    Create optimized ComfyUI workflow from job input
+    Optimized for quality and cost efficiency
+    """
+    
+    print("🔨 Building workflow from input parameters...")
     
     # Load base workflow if exists
     workflow_path = COMFY_DIR / "user/default/workflows/avatar_ai.json"
     
     if workflow_path.exists():
-        with open(workflow_path, 'r') as f:
-            workflow = json.load(f)
+        print(f"📂 Loading workflow from: {workflow_path}")
+        try:
+            with open(workflow_path, 'r') as f:
+                workflow = json.load(f)
+                print("✅ Workflow loaded successfully")
+        except Exception as e:
+            print(f"⚠️ Failed to load workflow: {e}, using default")
+            workflow = create_basic_workflow()
     else:
+        print("📝 Creating basic workflow (no custom workflow found)")
         workflow = create_basic_workflow()
     
-    # Extract parameters
-    positive_prompt = job_input.get("positive_prompt", "avachar, professional photo, high quality")
-    negative_prompt = job_input.get("negative_prompt", "ugly, deformed, blurry, low quality")
-    steps = job_input.get("steps", 30)
-    cfg = job_input.get("cfg_scale", 8.0)
+    # Extract parameters with optimized defaults
+    positive_prompt = job_input.get("positive_prompt", "avachar, professional photo, high quality, detailed face, 8k uhd")
+    negative_prompt = job_input.get("negative_prompt", "ugly, deformed, blurry, low quality, noise, watermark, text")
+    steps = job_input.get("steps", 25)  # Reduced from 30 for cost efficiency
+    cfg = job_input.get("cfg_scale", 7.5)  # Optimized for quality/creativity balance
     width = job_input.get("width", 1024)
     height = job_input.get("height", 1024)
     seed = job_input.get("seed", -1)
-    lora_strength = job_input.get("lora_strength", 0.8)
+    lora_strength = job_input.get("lora_strength", 0.85)  # Slightly increased for better avatar quality
+    
+    print(f"  - Positive prompt: {positive_prompt[:50]}...")
+    print(f"  - Steps: {steps} (cost-optimized)")
+    print(f"  - CFG Scale: {cfg}")
+    print(f"  - Resolution: {width}x{height}")
+    print(f"  - LoRA strength: {lora_strength}")
     
     # Update workflow nodes (customize based on your workflow structure)
-    # This is a simplified example - adapt to your actual workflow
+    updated_nodes = 0
     for node_id, node in workflow.items():
         if node.get("class_type") == "CLIPTextEncode":
-            if "positive" in node.get("_meta", {}).get("title", "").lower():
+            title = node.get("_meta", {}).get("title", "").lower()
+            if "positive" in title or node_id in ["6"]:  # Common positive prompt node IDs
                 node["inputs"]["text"] = positive_prompt
-            elif "negative" in node.get("_meta", {}).get("title", "").lower():
+                updated_nodes += 1
+                print(f"  ✓ Updated positive prompt in node {node_id}")
+            elif "negative" in title or node_id in ["7"]:  # Common negative prompt node IDs
                 node["inputs"]["text"] = negative_prompt
+                updated_nodes += 1
+                print(f"  ✓ Updated negative prompt in node {node_id}")
         
         elif node.get("class_type") == "KSampler":
             node["inputs"]["steps"] = steps
             node["inputs"]["cfg"] = cfg
-            node["inputs"]["seed"] = seed if seed != -1 else int(time.time())
+            node["inputs"]["seed"] = seed if seed != -1 else int(time.time() * 1000)
+            # Use efficient sampler for cost optimization
+            if "sampler_name" in node["inputs"]:
+                node["inputs"]["sampler_name"] = "dpmpp_2m_sde"  # Fast and high-quality
+            if "scheduler" in node["inputs"]:
+                node["inputs"]["scheduler"] = "karras"  # Good quality scheduler
+            updated_nodes += 1
+            print(f"  ✓ Updated sampler settings in node {node_id}")
         
         elif node.get("class_type") == "EmptyLatentImage":
             node["inputs"]["width"] = width
             node["inputs"]["height"] = height
+            updated_nodes += 1
+            print(f"  ✓ Updated dimensions in node {node_id}")
         
         elif node.get("class_type") == "LoraLoader":
             node["inputs"]["strength_model"] = lora_strength
             node["inputs"]["strength_clip"] = lora_strength
+            updated_nodes += 1
+            print(f"  ✓ Updated LoRA strength in node {node_id}")
     
+    print(f"✅ Updated {updated_nodes} workflow nodes")
     return workflow
 
 def create_basic_workflow():
-    """Create a basic SDXL + LoRA workflow"""
+    """
+    Create an optimized basic SDXL + LoRA workflow
+    Optimized for quality and cost efficiency
+    """
     
     return {
         "3": {
             "inputs": {
                 "seed": 0,
-                "steps": 30,
-                "cfg": 8.0,
-                "sampler_name": "dpmpp_2m_karras",
+                "steps": 25,  # Reduced for cost efficiency
+                "cfg": 7.5,    # Balanced for quality
+                "sampler_name": "dpmpp_2m_sde",  # Fast and high quality
                 "scheduler": "karras",
                 "denoise": 1.0,
                 "model": ["10", 0],
@@ -263,7 +463,7 @@ def create_basic_workflow():
         },
         "6": {
             "inputs": {
-                "text": "avachar, professional photo, high quality, detailed face",
+                "text": "avachar, professional photo, high quality, detailed face, sharp focus, 8k uhd, dslr, studio lighting",
                 "clip": ["10", 1]
             },
             "class_type": "CLIPTextEncode",
@@ -271,7 +471,7 @@ def create_basic_workflow():
         },
         "7": {
             "inputs": {
-                "text": "ugly, deformed, blurry, low quality",
+                "text": "ugly, deformed, blurry, low quality, noise, watermark, text, oversaturated, bad anatomy, disfigured",
                 "clip": ["10", 1]
             },
             "class_type": "CLIPTextEncode",
@@ -294,8 +494,8 @@ def create_basic_workflow():
         "10": {
             "inputs": {
                 "lora_name": "avatar_lora.safetensors",
-                "strength_model": 0.8,
-                "strength_clip": 0.8,
+                "strength_model": 0.85,  # Increased for better quality
+                "strength_clip": 0.85,
                 "model": ["11", 0],
                 "clip": ["11", 1]
             },
@@ -317,7 +517,7 @@ def create_basic_workflow():
 
 def handler(job):
     """
-    RunPod serverless handler with image format control
+    RunPod serverless handler with enhanced logging and JPG output
     
     Expected input:
     {
@@ -331,39 +531,62 @@ def handler(job):
         "lora_strength": 0.8,
         "num_images": 1,
         
-        # NEW: Image format options
+        # Image format options
         "output_format": "jpg",  # "jpg", "png", or "webp"
         "output_quality": 95,    # 1-100 (higher = better quality, larger file)
         "return_base64": true,   # Return base64 or URL
-        "return_metadata": true  # Include file size, dimensions, etc.
+        "return_metadata": true, # Include file size, dimensions, etc.
+        "save_to_disk": true     # Save images to /workspace/outputs
     }
     """
     
+    print("\n" + "="*60)
+    print("🎨 NEW JOB RECEIVED")
+    print("="*60)
+    
     job_input = job["input"]
+    print(f"📋 Job input keys: {list(job_input.keys())}")
     
     # Ensure ComfyUI is running
+    print("\n🔧 Checking ComfyUI server status...")
     if not start_comfyui():
-        return {"error": "Failed to start ComfyUI server"}
+        error_msg = "Failed to start ComfyUI server"
+        print(f"❌ {error_msg}")
+        return {"error": error_msg}
     
     try:
-        # Get output format settings
+        # Get output format settings (default to JPG as requested)
         output_format = job_input.get("output_format", "jpg").lower()
         output_quality = job_input.get("output_quality", 95)
         return_base64 = job_input.get("return_base64", True)
         return_metadata = job_input.get("return_metadata", True)
+        save_to_disk = job_input.get("save_to_disk", True)
+        
+        print(f"\n📸 Output settings:")
+        print(f"  - Format: {output_format.upper()}")
+        print(f"  - Quality: {output_quality}")
+        print(f"  - Return base64: {return_base64}")
+        print(f"  - Save to disk: {save_to_disk}")
         
         # Validate format
         if output_format not in ["jpg", "jpeg", "png", "webp"]:
-            return {"error": f"Invalid output_format: {output_format}. Use 'jpg', 'png', or 'webp'"}
+            error_msg = f"Invalid output_format: {output_format}. Use 'jpg', 'png', or 'webp'"
+            print(f"❌ {error_msg}")
+            return {"error": error_msg}
         
         # Validate quality
         if not 1 <= output_quality <= 100:
-            return {"error": f"Invalid output_quality: {output_quality}. Use 1-100"}
+            error_msg = f"Invalid output_quality: {output_quality}. Use 1-100"
+            print(f"❌ {error_msg}")
+            return {"error": error_msg}
         
         # Create workflow
+        print("\n🔨 Creating workflow...")
         workflow = create_workflow(job_input)
+        print("✅ Workflow created")
         
         # Queue prompt
+        print("\n📤 Queueing prompt...")
         queue_result = queue_prompt(workflow)
         
         if "error" in queue_result:
@@ -372,20 +595,31 @@ def handler(job):
         prompt_id = queue_result.get("prompt_id")
         
         if not prompt_id:
-            return {"error": "No prompt_id returned"}
+            error_msg = "No prompt_id returned from queue"
+            print(f"❌ {error_msg}")
+            return {"error": error_msg}
+        
+        print(f"✅ Prompt queued with ID: {prompt_id}")
         
         # Wait for completion
+        print("\n⏳ Waiting for generation to complete...")
         outputs = wait_for_completion(prompt_id)
         
         if "error" in outputs:
             return outputs
         
         # Process generated images
+        print("\n🖼️ Processing generated images...")
         images = []
+        saved_paths = []
         
         for node_id, node_output in outputs.items():
             if "images" in node_output:
-                for image_info in node_output["images"]:
+                print(f"📦 Found {len(node_output['images'])} image(s) in node {node_id}")
+                
+                for idx, image_info in enumerate(node_output["images"]):
+                    print(f"\n  Processing image {idx + 1}...")
+                    
                     # Get original image
                     original_data = get_image(
                         image_info["filename"],
@@ -393,41 +627,64 @@ def handler(job):
                         image_info.get("type", "output")
                     )
                     
-                    if original_data:
-                        # Convert to desired format
-                        converted_data = convert_image_format(
-                            original_data,
-                            output_format,
-                            output_quality
-                        )
-                        
-                        # Get metadata
-                        img = Image.open(BytesIO(converted_data))
-                        
-                        image_result = {
-                            "filename": f"{Path(image_info['filename']).stem}.{output_format}"
+                    if not original_data:
+                        print(f"  ⚠️ Failed to fetch image, skipping...")
+                        continue
+                    
+                    # Convert to desired format (ensure JPG)
+                    print(f"  🔄 Converting to {output_format.upper()}...")
+                    converted_data = convert_image_format(
+                        original_data,
+                        output_format,
+                        output_quality
+                    )
+                    
+                    # Get metadata
+                    img = Image.open(BytesIO(converted_data))
+                    
+                    # Create filename with proper extension
+                    original_name = Path(image_info['filename']).stem
+                    new_filename = f"{original_name}.{output_format}"
+                    
+                    image_result = {
+                        "filename": new_filename
+                    }
+                    
+                    # Save to disk if requested
+                    if save_to_disk:
+                        saved_path = save_image_to_disk(converted_data, new_filename)
+                        if saved_path:
+                            saved_paths.append(saved_path)
+                            image_result["saved_path"] = saved_path
+                    
+                    # Return base64 encoded image
+                    if return_base64:
+                        b64_image = base64.b64encode(converted_data).decode('utf-8')
+                        image_result["image"] = b64_image
+                        image_result["image_data_url"] = f"data:image/{output_format};base64,{b64_image}"
+                        print(f"  ✅ Image encoded to base64 ({len(b64_image)} chars)")
+                    
+                    # Add metadata
+                    if return_metadata:
+                        image_result["metadata"] = {
+                            "width": img.width,
+                            "height": img.height,
+                            "format": output_format.upper(),
+                            "mode": img.mode,
+                            "size_bytes": len(converted_data),
+                            "size_mb": round(get_file_size_mb(converted_data), 2),
+                            "quality": output_quality
                         }
-                        
-                        if return_base64:
-                            # Return base64 encoded image
-                            b64_image = base64.b64encode(converted_data).decode('utf-8')
-                            image_result["image"] = b64_image
-                            image_result["image_data_url"] = f"data:image/{output_format};base64,{b64_image}"
-                        
-                        if return_metadata:
-                            image_result["metadata"] = {
-                                "width": img.width,
-                                "height": img.height,
-                                "format": output_format.upper(),
-                                "mode": img.mode,
-                                "size_bytes": len(converted_data),
-                                "size_mb": round(get_file_size_mb(converted_data), 2),
-                                "quality": output_quality
-                            }
-                        
-                        images.append(image_result)
+                        print(f"  📊 Dimensions: {img.width}x{img.height}")
+                        print(f"  📊 Size: {image_result['metadata']['size_mb']} MB")
+                    
+                    images.append(image_result)
         
-        return {
+        print(f"\n✅ Successfully processed {len(images)} image(s)")
+        if saved_paths:
+            print(f"💾 Saved to: {saved_paths}")
+        
+        result = {
             "status": "success",
             "images": images,
             "prompt_id": prompt_id,
@@ -438,20 +695,69 @@ def handler(job):
             }
         }
         
+        if saved_paths:
+            result["saved_paths"] = saved_paths
+        
+        print("\n" + "="*60)
+        print("✅ JOB COMPLETED SUCCESSFULLY")
+        print("="*60 + "\n")
+        
+        return result
+        
     except Exception as e:
-        return {"error": f"Handler exception: {str(e)}"}
+        error_msg = f"Handler exception: {type(e).__name__}: {str(e)}"
+        print(f"\n❌ {error_msg}")
+        import traceback
+        print(traceback.format_exc())
+        return {"error": error_msg}
 
 # Initialize on container start
 print("=" * 60)
-print("🤖 RunPod Avatar Generation Handler v2.0")
+print("🤖 RunPod Avatar Generation Handler v2.1")
 print("📸 Supports: JPG, PNG, WebP with quality control")
+print("💾 Auto-saves images to /workspace/outputs")
+print("🔍 Enhanced debugging and error logging")
 print("=" * 60)
 
+# Verify Python and environment
+print(f"🐍 Python: {sys.version}")
+print(f"📂 Working directory: {os.getcwd()}")
+print(f"🔧 ComfyUI path: {COMFY_DIR}")
+
+# Check model directory
+print("\n📦 Checking models...")
+model_checks = [
+    ("SDXL Base", COMFY_DIR / "models/checkpoints/sd_xl_base_1.0.safetensors"),
+    ("SDXL VAE", COMFY_DIR / "models/vae/sdxl_vae.safetensors"),
+    ("Avatar LoRA", COMFY_DIR / "models/loras/avatar_lora.safetensors"),
+]
+
+models_missing = []
+for name, path in model_checks:
+    if path.exists():
+        size_mb = path.stat().st_size / (1024 * 1024)
+        print(f"  ✓ {name}: {size_mb:.1f} MB")
+    else:
+        print(f"  ✗ {name}: NOT FOUND")
+        models_missing.append(name)
+
 # Download models if needed
-if not (COMFY_DIR / "models/checkpoints/sd_xl_base_1.0.safetensors").exists():
-    print("📥 Models not found, downloading...")
-    import download_models
-    download_models.download_all_models()
+if models_missing or not (COMFY_DIR / "models/checkpoints/sd_xl_base_1.0.safetensors").exists():
+    print("\n📥 Models missing, downloading...")
+    try:
+        import download_models
+        if download_models.download_all_models():
+            print("✅ All models downloaded successfully")
+        else:
+            print("⚠️ Some models may have failed to download")
+    except Exception as e:
+        print(f"❌ Error downloading models: {e}")
+else:
+    print("✅ All required models present")
+
+print("\n" + "=" * 60)
+print("🚀 Handler ready for jobs!")
+print("=" * 60 + "\n")
 
 # Start RunPod serverless
 if __name__ == "__main__":
