@@ -1,16 +1,20 @@
 # ComfyUI Serverless on RunPod
 
-A production-ready serverless deployment of ComfyUI for AI image generation, optimized for RunPod's GPU infrastructure.
+A production-ready serverless deployment of ComfyUI for AI image generation, optimized for RunPod's GPU infrastructure with enhanced debugging and error handling.
 
 ## 🚀 Features
 
 - **Serverless Architecture**: Pay-per-second GPU usage with automatic scaling
 - **ComfyUI Integration**: Full ComfyUI workflow support with custom nodes
 - **Multi-Format Support**: Generate images in JPG, PNG, or WebP with quality control
-- **ControlNet Support**: Advanced pose and composition control
+- **Auto-Save to Disk**: Images automatically saved to `/workspace/outputs`
+- **Enhanced Debugging**: Comprehensive logging at every step for easy troubleshooting
+- **Cost-Optimized**: Reduced steps and optimized sampler settings for efficiency
+- **Robust Error Handling**: Detailed error messages and retry logic
 - **Custom LoRA Support**: Load and use custom models
 - **Docker-Based**: Consistent environment across deployments
 - **Optimized Build**: ~12GB Docker image with CUDA 11.8 + PyTorch 2.1.0
+- **Unit Tests**: Comprehensive test suite for validation
 
 ## 📋 Prerequisites
 
@@ -24,12 +28,15 @@ A production-ready serverless deployment of ComfyUI for AI image generation, opt
 ```
 comfyui_serverless/
 ├── Dockerfile              # Docker image configuration
-├── handler.py              # RunPod serverless handler
-├── download_models.py      # Model download script
+├── handler.py              # RunPod serverless handler (v2.1)
+├── download_models.py      # Model download script with retry logic
 ├── deploy.sh              # Deployment automation script
-├── start.sh               # Local startup script
 ├── test_endpoint.py       # API endpoint testing
+├── test_handler.py        # Unit tests for handler functions
+├── local_test.py          # Local testing without ComfyUI
 ├── comfy_setup.py         # ComfyUI setup utilities
+├── DEBUGGING.md           # Comprehensive debugging guide
+├── .gitignore             # Git ignore patterns
 ├── LICENSE                # MIT License
 └── README.md              # This file
 ```
@@ -194,14 +201,17 @@ python test_endpoint.py
   "input": {
     "positive_prompt": "professional portrait, high quality, detailed",
     "negative_prompt": "ugly, deformed, blurry, low quality",
-    "steps": 30,
-    "cfg_scale": 8.0,
+    "steps": 25,
+    "cfg_scale": 7.5,
     "width": 1024,
     "height": 1024,
     "seed": -1,
-    "lora_strength": 0.8,
+    "lora_strength": 0.85,
     "output_format": "jpg",
-    "quality": 95
+    "output_quality": 95,
+    "save_to_disk": true,
+    "return_base64": true,
+    "return_metadata": true
   }
 }
 ```
@@ -210,20 +220,76 @@ python test_endpoint.py
 
 ```json
 {
-  "output": {
-    "images": [
-      "base64_encoded_image_data..."
-    ],
-    "metadata": {
-      "seed": 12345,
-      "format": "jpg",
-      "size_mb": 1.2
+  "status": "success",
+  "images": [
+    {
+      "filename": "avatar_00001_.jpg",
+      "image": "base64_encoded_image_data...",
+      "image_data_url": "data:image/jpg;base64,...",
+      "saved_path": "/workspace/outputs/avatar_00001_.jpg",
+      "metadata": {
+        "width": 1024,
+        "height": 1024,
+        "format": "JPG",
+        "mode": "RGB",
+        "size_bytes": 1887654,
+        "size_mb": 1.8,
+        "quality": 95
+      }
     }
-  }
+  ],
+  "prompt_id": "abc123",
+  "settings": {
+    "format": "jpg",
+    "quality": 95,
+    "total_images": 1
+  },
+  "saved_paths": ["/workspace/outputs/avatar_00001_.jpg"]
 }
 ```
 
+## 🧪 Testing
+
+### Run Unit Tests
+
+```bash
+# Test handler functions locally
+python3 test_handler.py
+
+# Run all local tests
+python3 local_test.py
+```
+
+### Test with RunPod Endpoint
+
+```bash
+# Update endpoint URL and API key in test_endpoint.py
+python3 test_endpoint.py
+```
+
 ## 🔍 Optimization Tips
+
+### Cost-Efficient Settings (Recommended)
+
+```python
+{
+    "steps": 25,              # Reduced from 30 (20% faster)
+    "cfg_scale": 7.5,         # Balanced quality/creativity
+    "width": 1024,            # Standard SDXL resolution
+    "height": 1024,
+    "lora_strength": 0.85,    # Optimized for avatar quality
+    "output_format": "jpg",   # Smaller file size
+    "output_quality": 95      # High quality, reasonable size
+}
+```
+
+### What's Been Optimized
+
+- **Sampler**: `dpmpp_2m_sde` (fast and high quality)
+- **Scheduler**: `karras` (good quality)
+- **Steps**: Reduced to 25 (from 30) for 20% speed improvement
+- **CFG Scale**: 7.5 (from 8.0) for better balance
+- **Output**: JPG format by default (smaller files than PNG)
 
 ### Reduce Docker Image Size
 
@@ -246,15 +312,81 @@ RUN pip install opencv-python
 RUN pip install opencv-python-headless
 ```
 
-**Remove unused packages**:
-- `mediapipe` - Only if not using face detection (~100 MB)
-- `svglib` - Only if processing SVG files (~50 MB)
-
 ### Build Time Optimization
 
 - **Layer Caching**: Place frequently changing files (handler.py) last
 - **Multi-stage Builds**: Separate build and runtime stages
 - **Parallel Installs**: Combine RUN commands when possible
+
+## 🐛 Troubleshooting
+
+For detailed debugging information, see [DEBUGGING.md](DEBUGGING.md)
+
+### Common Issues
+
+1. **ComfyUI server fails to start**
+   - Check logs for detailed error messages
+   - Verify GPU availability with `nvidia-smi`
+   - Increase startup timeout (currently 60 seconds)
+
+2. **Model download failures**
+   - Network issues or rate limiting
+   - Use RunPod Network Volumes for persistence
+   - Check DEBUGGING.md for manual download steps
+
+3. **Out of memory errors**
+   - Reduce resolution (1024 → 768)
+   - Lower batch size
+   - Use xformers for memory efficiency
+
+4. **Image generation timeout**
+   - Increase timeout (default 300s)
+   - Simplify workflow
+   - Check ComfyUI logs for node errors
+
+### Logging Output
+
+The handler provides detailed logging at every step:
+
+```
+🚀 Starting ComfyUI server...
+📂 Working directory: /workspace/ComfyUI
+✅ ComfyUI files verified
+✅ ComfyUI process started (PID: 12345)
+⏳ Waiting for server to start (max 60 seconds)...
+✅ ComfyUI server started successfully after 15 seconds
+
+🎨 NEW JOB RECEIVED
+📋 Job input keys: ['positive_prompt', 'steps', 'output_format']
+🔧 Checking ComfyUI server status...
+✅ Existing ComfyUI server is healthy
+
+📸 Output settings:
+  - Format: JPG
+  - Quality: 95
+  - Return base64: True
+  - Save to disk: True
+
+🔨 Creating workflow...
+✅ Workflow created
+
+📤 Queueing prompt...
+✅ Prompt queued successfully: abc123
+
+⏳ Waiting for prompt completion (ID: abc123, timeout: 300s)...
+📊 Status update: running (after 10s)
+✅ Prompt completed after 45s
+
+🖼️ Processing generated images...
+📦 Found 1 image(s) in node 9
+  Processing image 1...
+📥 Fetching image: avatar_00001_.png
+✅ Image fetched successfully (2.5 MB)
+🔄 Converting to JPG...
+💾 Saved image: /workspace/outputs/avatar_00001_.jpg (1.8 MB)
+
+✅ JOB COMPLETED SUCCESSFULLY
+```
 
 ## 🧪 Testing
 
@@ -266,6 +398,16 @@ docker run --rm -it --gpus all -p 8188:8188 4darsh/comfyui-serverless:latest
 
 # Access ComfyUI interface
 open http://localhost:8188
+```
+
+### Unit Tests
+
+```bash
+# Test handler functions
+python3 test_handler.py
+
+# Run local test suite
+python3 local_test.py
 ```
 
 ### Endpoint Testing
@@ -306,11 +448,14 @@ docker system prune -a --volumes
 - Check logs: `docker logs <container_id>`
 - Increase startup timeout in `handler.py`
 - Verify GPU availability: `nvidia-smi`
+- See detailed troubleshooting in [DEBUGGING.md](DEBUGGING.md)
 
 **Out of memory errors**
 - Reduce image resolution
 - Use lower batch sizes
 - Choose GPU with more VRAM
+
+**For comprehensive debugging guide, see [DEBUGGING.md](DEBUGGING.md)**
 
 ## 📦 Models
 
@@ -363,4 +508,32 @@ MIT License - see [LICENSE](LICENSE) file for details
 
 **Built with ❤️ for the AI community**
 
-*Last Updated: November 12, 2025*
+## 📚 Additional Resources
+
+- [DEBUGGING.md](DEBUGGING.md) - Comprehensive debugging and troubleshooting guide
+- [ComfyUI GitHub](https://github.com/comfyanonymous/ComfyUI)
+- [RunPod Documentation](https://docs.runpod.io/)
+- [Docker Hub Image](https://hub.docker.com/r/4darsh/comfyui-serverless)
+
+## 📊 Version History
+
+- **v2.1** (Current)
+  - ✅ Enhanced logging and debugging
+  - ✅ Improved error handling with retry logic
+  - ✅ Optimized workflow settings (25 steps, dpmpp_2m_sde sampler)
+  - ✅ Added comprehensive tests (12 unit tests)
+  - ✅ JPG output by default
+  - ✅ Auto-save to /workspace/outputs
+  - ✅ Better server startup detection
+  - ✅ Detailed progress logging
+
+- **v2.0**
+  - Multi-format support (JPG, PNG, WebP)
+  - Quality control
+  - Base64 encoding
+
+- **v1.0**
+  - Initial release
+  - Basic SDXL + LoRA workflow
+
+*Last Updated: November 14, 2025*
