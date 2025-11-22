@@ -374,6 +374,41 @@ def create_workflow(job_input):
         print("📝 Creating basic workflow (no custom workflow found)")
         workflow = create_basic_workflow()
     
+    # Normalize workflow structure: some exported workflows use a top-level {"nodes": [...]} list
+    # or include metadata keys whose values are simple strings/numbers. We only mutate node dicts.
+    if isinstance(workflow, dict) and "nodes" in workflow and isinstance(workflow.get("nodes"), list):
+        # Convert list of node dicts with an 'id' field into our expected mapping
+        node_list = workflow.get("nodes", [])
+        normalized = {}
+        for n in node_list:
+            if isinstance(n, dict):
+                node_id = str(n.get("id", ""))
+                if node_id:
+                    normalized[node_id] = n
+        if normalized:
+            workflow = normalized
+            print(f"ℹ️ Normalized workflow from nodes list to dict with {len(workflow)} entries")
+    elif isinstance(workflow, list):
+        # Unexpected list: attempt to build dict assuming each item has 'id'
+        normalized = {}
+        for n in workflow:
+            if isinstance(n, dict):
+                node_id = str(n.get("id", ""))
+                if node_id:
+                    normalized[node_id] = n
+        if normalized:
+            workflow = normalized
+            print(f"ℹ️ Normalized workflow from list to dict with {len(workflow)} entries")
+        else:
+            print("⚠️ Workflow is a list without dict nodes; using basic workflow fallback")
+            workflow = create_basic_workflow()
+
+    # Detect UI-export (graph editor) format nodes lacking 'class_type'. If found, fallback to basic API workflow.
+    raw_ui_nodes = sum(1 for n in workflow.values() if isinstance(n, dict) and 'type' in n and 'class_type' not in n)
+    if raw_ui_nodes:
+        print(f"ℹ️ Detected {raw_ui_nodes} UI layout node(s) without 'class_type'. Falling back to basic API workflow format.")
+        workflow = create_basic_workflow()
+
     # Extract parameters with optimized defaults
     positive_prompt = job_input.get("positive_prompt", "avachar, professional photo, high quality, detailed face, 8k uhd")
     negative_prompt = job_input.get("negative_prompt", "ugly, deformed, blurry, low quality, noise, watermark, text")
@@ -393,7 +428,11 @@ def create_workflow(job_input):
     # Update workflow nodes (customize based on your workflow structure)
     updated_nodes = 0
     for node_id, node in workflow.items():
-        if node.get("class_type") == "CLIPTextEncode":
+        if not isinstance(node, dict):
+            # Skip metadata/non-node entries
+            continue
+        class_type = node.get("class_type")
+        if class_type == "CLIPTextEncode":
             title = node.get("_meta", {}).get("title", "").lower()
             if "positive" in title or node_id in ["6"]:  # Common positive prompt node IDs
                 node["inputs"]["text"] = positive_prompt
@@ -404,7 +443,7 @@ def create_workflow(job_input):
                 updated_nodes += 1
                 print(f"  ✓ Updated negative prompt in node {node_id}")
         
-        elif node.get("class_type") == "KSampler":
+        elif class_type == "KSampler":
             node["inputs"]["steps"] = steps
             node["inputs"]["cfg"] = cfg
             node["inputs"]["seed"] = seed if seed != -1 else int(time.time() * 1000)
@@ -416,13 +455,13 @@ def create_workflow(job_input):
             updated_nodes += 1
             print(f"  ✓ Updated sampler settings in node {node_id}")
         
-        elif node.get("class_type") == "EmptyLatentImage":
+        elif class_type == "EmptyLatentImage":
             node["inputs"]["width"] = width
             node["inputs"]["height"] = height
             updated_nodes += 1
             print(f"  ✓ Updated dimensions in node {node_id}")
         
-        elif node.get("class_type") == "LoraLoader":
+        elif class_type == "LoraLoader":
             node["inputs"]["strength_model"] = lora_strength
             node["inputs"]["strength_clip"] = lora_strength
             updated_nodes += 1
