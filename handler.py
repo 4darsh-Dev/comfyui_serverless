@@ -72,13 +72,13 @@ def start_comfyui():
         os.chdir(COMFY_DIR)
         print(f"✅ Changed directory to: {os.getcwd()}")
         
-        # Start ComfyUI process with unbuffered output
+        # Start ComfyUI process; avoid piping large tqdm output to Python to prevent BrokenPipeError.
+        # Use inherited stdout/stderr so progress bars can write directly.
         comfy_process = subprocess.Popen(
             [sys.executable, "-u", "main.py", "--listen", "0.0.0.0", "--port", str(COMFY_PORT)],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,  # Merge stderr to stdout
-            bufsize=1,
-            universal_newlines=True
+            stdout=None,
+            stderr=None,
+            bufsize=0
         )
         
         print(f"✅ ComfyUI process started (PID: {comfy_process.pid})")
@@ -599,7 +599,8 @@ def handler(job):
         output_quality = job_input.get("output_quality", 95)
         return_base64 = job_input.get("return_base64", True)
         return_metadata = job_input.get("return_metadata", True)
-        save_to_disk = job_input.get("save_to_disk", True)
+        # Accept legacy/misspelled key 'save_to_dsk'
+        save_to_disk = job_input.get("save_to_disk", job_input.get("save_to_dsk", True))
         
         print(f"\n📸 Output settings:")
         print(f"  - Format: {output_format.upper()}")
