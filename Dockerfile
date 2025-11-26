@@ -29,7 +29,9 @@ RUN pip install --no-cache-dir \
     controlnet-aux \
     "numpy<2.0" \
     "scipy<1.13" \
-    runpod
+    runpod \
+    supabase \
+    python-dotenv
 
 # Clone ComfyUI
 RUN git clone https://github.com/comfyanonymous/ComfyUI /workspace/ComfyUI
@@ -47,6 +49,7 @@ RUN cd custom_nodes && \
 
 # Copy handler script
 COPY handler.py /workspace/handler.py
+COPY upload_image.py /workspace/upload_image.py
 COPY download_models.py /workspace/download_models.py
 
 # Create model directories

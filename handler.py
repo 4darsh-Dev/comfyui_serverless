@@ -21,8 +21,10 @@ from typing import Optional
 # Optional upload helper
 try:
     from upload_image import upload_image as supa_upload_image  # local helper
-except Exception:
+    print("✅ Successfully imported upload_image module")
+except Exception as e:
     supa_upload_image = None
+    print(f"⚠️ Failed to import upload_image module: {e}")
 
 # Configuration
 COMFY_DIR = Path("/workspace/ComfyUI")
@@ -657,6 +659,7 @@ def handler(job):
         images = []
         saved_paths = []
         upload_enabled = os.environ.get("ENABLE_S3_UPLOAD", "true").lower() != "false"
+        print(f"🔧 Upload configuration: enabled={upload_enabled}, helper_loaded={supa_upload_image is not None}")
         
         for node_id, node_output in outputs.items():
             if "images" in node_output:
@@ -702,9 +705,16 @@ def handler(job):
                             saved_paths.append(saved_path)
                             image_result["saved_path"] = saved_path
 
+                    # Debug upload conditions
+                    print(f"  🔍 Upload debug:")
+                    print(f"     - ENABLE_S3_UPLOAD: {os.environ.get('ENABLE_S3_UPLOAD', 'NOT_SET')}")
+                    print(f"     - upload_enabled: {upload_enabled}")
+                    print(f"     - supa_upload_image available: {supa_upload_image is not None}")
+                    
                     # Upload to Supabase Storage if enabled
                     if upload_enabled and supa_upload_image is not None:
                         try:
+                            print(f"  🚀 Starting Supabase upload...")
                             content_type = {
                                 "jpg": "image/jpeg",
                                 "jpeg": "image/jpeg",
@@ -721,11 +731,15 @@ def handler(job):
                             
                             if upload_resp.get("success"):
                                 image_result["public_url"] = upload_resp["public_url"]
-                                print(f"  ✅ Uploaded successfully")
+                                print(f"  ✅ Uploaded: {upload_resp['public_url']}")
                             else:
                                 print(f"  ⚠️ Upload failed: {upload_resp.get('error')}")
                         except Exception as up_e:
                             print(f"  ⚠️ Upload exception: {up_e}")
+                            import traceback
+                            traceback.print_exc()
+                    else:
+                        print(f"  ⚠️ Upload skipped - enabled={upload_enabled}, helper_available={supa_upload_image is not None}")
                     
                     # Return base64 encoded image
                     if return_base64:
@@ -792,6 +806,39 @@ print("=" * 60)
 print(f"🐍 Python: {sys.version}")
 print(f"📂 Working directory: {os.getcwd()}")
 print(f"🔧 ComfyUI path: {COMFY_DIR}")
+
+# Check Supabase configuration
+print("\n☁️ Checking Supabase configuration...")
+supabase_vars = {
+    "SUPABASE_URL": os.environ.get("SUPABASE_URL"),
+    "SUPABASE_S3_KEY": os.environ.get("SUPABASE_S3_KEY"),
+    "SUPABASE_BUCKET": os.environ.get("SUPABASE_BUCKET"),
+    "S3_UPLOAD_FOLDER": os.environ.get("S3_UPLOAD_FOLDER", "avatar-uploads"),
+    "ENABLE_S3_UPLOAD": os.environ.get("ENABLE_S3_UPLOAD", "true"),
+}
+
+all_vars_set = True
+for var_name, var_value in supabase_vars.items():
+    if var_value:
+        # Mask the key for security
+        if "KEY" in var_name:
+            display_value = f"{var_value[:8]}...{var_value[-4:]}" if len(var_value) > 12 else "***"
+        elif "URL" in var_name:
+            display_value = var_value
+        else:
+            display_value = var_value
+        print(f"  ✓ {var_name}: {display_value}")
+    else:
+        print(f"  ✗ {var_name}: NOT SET")
+        if var_name in ["SUPABASE_URL", "SUPABASE_S3_KEY", "SUPABASE_BUCKET"]:
+            all_vars_set = False
+
+if not all_vars_set:
+    print("  ⚠️ Some required Supabase variables are missing. Upload will be disabled.")
+elif supa_upload_image is None:
+    print("  ⚠️ upload_image module failed to load. Upload will be disabled.")
+else:
+    print("  ✅ Supabase upload is ready!")
 
 # Check model directory
 print("\n📦 Checking models...")
