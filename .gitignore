@@ -49,3 +49,5 @@ models/
 
 
 .env
+
+myenv/

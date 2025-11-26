@@ -536,4 +536,34 @@ MIT License - see [LICENSE](LICENSE) file for details
   - Initial release
   - Basic SDXL + LoRA workflow
 
-*Last Updated: November 14, 2025*
+*Last Updated: November 14, 2025**
+
+## 🖼️ Generating Avatars Locally
+
+A helper script `generate_avatar.py` is provided to call the deployed RunPod endpoint and save returned base64 images to `avatar_images/` as JPG files.
+
+Usage:
+
+```bash
+python generate_avatar.py "a majestic cyberpunk cat"
+```
+
+It will:
+- Load `RUNPOD_API_KEY` from `.env` (place the file next to the script) using `python-dotenv` if installed.
+- POST your prompt to the endpoint: `https://api.runpod.ai/v2/6qtbu2qnofk4m6/run`.
+- Wait for the JSON response (can take ~2 minutes).
+- Decode each returned image's base64 data and save as JPG.
+- Name files using the first letters of up to 4 words of the prompt plus a shortened response id, e.g. `amcc_ab12cd34.jpg`.
+
+If multiple images are returned they will be suffixed `_1`, `_2`, etc.
+
+Ensure you have `requests` (and optionally `python-dotenv`) installed:
+
+```bash
+pip install requests python-dotenv
+```
+
+Troubleshooting:
+- Missing API key: add `RUNPOD_API_KEY=your_key_here` to `.env`.
+- Empty images array: inspect printed JSON snippet; verify the endpoint and prompt.
+- Slow responses (>2m): network or GPU queue delay; script waits up to 5 minutes.

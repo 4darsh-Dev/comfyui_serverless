@@ -16,6 +16,13 @@ import signal
 from pathlib import Path
 from io import BytesIO
 from PIL import Image
+from typing import Optional
+
+# Optional upload helper
+try:
+    from upload_image import upload_image as supa_upload_image  # local helper
+except Exception:
+    supa_upload_image = None
 
 # Configuration
 COMFY_DIR = Path("/workspace/ComfyUI")
@@ -603,10 +610,8 @@ def handler(job):
         save_to_disk = job_input.get("save_to_disk", job_input.get("save_to_dsk", True))
         
         print(f"\n📸 Output settings:")
-        print(f"  - Format: {output_format.upper()}")
-        print(f"  - Quality: {output_quality}")
-        print(f"  - Return base64: {return_base64}")
-        print(f"  - Save to disk: {save_to_disk}")
+        print(f"  - Format: {output_format.upper()}, Quality: {output_quality}")
+        print(f"  - Base64: {return_base64}, Save to disk: {save_to_disk}")
         
         # Validate format
         if output_format not in ["jpg", "jpeg", "png", "webp"]:
@@ -623,10 +628,9 @@ def handler(job):
         # Create workflow
         print("\n🔨 Creating workflow...")
         workflow = create_workflow(job_input)
-        print("✅ Workflow created")
         
         # Queue prompt
-        print("\n📤 Queueing prompt...")
+        print("📤 Queueing prompt...")
         queue_result = queue_prompt(workflow)
         
         if "error" in queue_result:
@@ -647,11 +651,12 @@ def handler(job):
         
         if "error" in outputs:
             return outputs
-        
+
         # Process generated images
         print("\n🖼️ Processing generated images...")
         images = []
         saved_paths = []
+        upload_enabled = os.environ.get("ENABLE_S3_UPLOAD", "true").lower() != "false"
         
         for node_id, node_output in outputs.items():
             if "images" in node_output:
@@ -696,13 +701,37 @@ def handler(job):
                         if saved_path:
                             saved_paths.append(saved_path)
                             image_result["saved_path"] = saved_path
+
+                    # Upload to Supabase Storage if enabled
+                    if upload_enabled and supa_upload_image is not None:
+                        try:
+                            content_type = {
+                                "jpg": "image/jpeg",
+                                "jpeg": "image/jpeg",
+                                "png": "image/png",
+                                "webp": "image/webp",
+                            }.get(output_format.lower(), "application/octet-stream")
+
+                            upload_resp = supa_upload_image(
+                                image_bytes=converted_data,
+                                filename=new_filename,
+                                content_type=content_type,
+                                folder=os.environ.get("S3_UPLOAD_FOLDER", "avatar-uploads"),
+                            )
+                            
+                            if upload_resp.get("success"):
+                                image_result["public_url"] = upload_resp["public_url"]
+                                print(f"  ✅ Uploaded successfully")
+                            else:
+                                print(f"  ⚠️ Upload failed: {upload_resp.get('error')}")
+                        except Exception as up_e:
+                            print(f"  ⚠️ Upload exception: {up_e}")
                     
                     # Return base64 encoded image
                     if return_base64:
                         b64_image = base64.b64encode(converted_data).decode('utf-8')
                         image_result["image"] = b64_image
                         image_result["image_data_url"] = f"data:image/{output_format};base64,{b64_image}"
-                        print(f"  ✅ Image encoded to base64 ({len(b64_image)} chars)")
                     
                     # Add metadata
                     if return_metadata:
@@ -723,7 +752,7 @@ def handler(job):
         print(f"\n✅ Successfully processed {len(images)} image(s)")
         if saved_paths:
             print(f"💾 Saved to: {saved_paths}")
-        
+
         result = {
             "status": "success",
             "images": images,
@@ -734,14 +763,14 @@ def handler(job):
                 "total_images": len(images)
             }
         }
-        
+
         if saved_paths:
             result["saved_paths"] = saved_paths
-        
+
         print("\n" + "="*60)
         print("✅ JOB COMPLETED SUCCESSFULLY")
         print("="*60 + "\n")
-        
+
         return result
         
     except Exception as e:
